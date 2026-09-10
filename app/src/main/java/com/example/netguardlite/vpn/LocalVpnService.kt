@@ -139,10 +139,14 @@ class LocalVpnService : VpnService() {
     /** يعيد تقييم هل النفق لازم يكون شغال أو متوقف حسب الشبكة الحالية */
     private fun refreshVpnState() {
         if (!isRunning) return
-        if (currentTransportAllowsProtection()) {
-            establishVpn()
-        } else {
-            teardownTunnelOnly()
+        try {
+            if (currentTransportAllowsProtection()) {
+                establishVpn()
+            } else {
+                teardownTunnelOnly()
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("LocalVpnService", "فشل تحديث حالة النفق", e)
         }
     }
 

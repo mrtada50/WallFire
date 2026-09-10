@@ -16,7 +16,7 @@ data class ConnectionAttempt(
  */
 object ConnectionLog {
 
-    private const val MAX_ENTRIES = 200
+    private const val MAX_ENTRIES = 50
     private const val DEDUPE_WINDOW_MS = 5000L
 
     val entries = mutableStateListOf<ConnectionAttempt>()

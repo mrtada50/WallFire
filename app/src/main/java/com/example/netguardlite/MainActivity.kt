@@ -1,6 +1,9 @@
 package com.example.netguardlite
 
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
@@ -14,10 +17,13 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -35,6 +41,9 @@ import com.example.netguardlite.data.TrafficMonitor
 import com.example.netguardlite.vpn.AllowListStore
 import com.example.netguardlite.vpn.ConnectionLog
 import com.example.netguardlite.vpn.LocalVpnService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -54,6 +63,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun NetGuardApp() {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
 
     var apps by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
     val allowedPackages = remember { mutableStateMapOf<String, Boolean>() }
@@ -62,6 +72,7 @@ fun NetGuardApp() {
     var networkScope by remember { mutableStateOf(AllowListStore.getNetworkScope(context)) }
     var selectedTab by remember { mutableStateOf(0) }
     var showNetworkDialog by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
 
     val vpnPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -80,14 +91,60 @@ fun NetGuardApp() {
         ActivityResultContracts.RequestPermission()
     ) { }
 
+    fun mergeAllowed(list: List<AppInfo>) {
+        val savedAllowed = AllowListStore.getAllowedPackages(context)
+        list.forEach { app ->
+            if (!allowedPackages.containsKey(app.packageName)) {
+                allowedPackages[app.packageName] = savedAllowed.contains(app.packageName)
+            }
+        }
+    }
+
+    suspend fun refreshAppsInBackground() {
+        val fresh = withContext(Dispatchers.IO) { AppRepository.getInternetCapableApps(context) }
+        apps = fresh
+        mergeAllowed(fresh)
+    }
+
+    // عرض فوري من الكاش المحفوظ، ثم تحديث حقيقي بالخلفية بدون تجميد الواجهة
     LaunchedEffect(Unit) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         }
-        val list = AppRepository.getInternetCapableApps(context)
-        apps = list
-        val savedAllowed = AllowListStore.getAllowedPackages(context)
-        list.forEach { allowedPackages[it.packageName] = savedAllowed.contains(it.packageName) }
+
+        val cached = AppRepository.loadCachedApps(context)
+        if (cached.isNotEmpty()) {
+            apps = cached
+            mergeAllowed(cached)
+        }
+
+        refreshAppsInBackground()
+    }
+
+    // مراقبة تثبيت/حذف التطبيقات لحظياً وتحديث القائمة تلقائياً
+    DisposableEffect(Unit) {
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED)
+            addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addAction(Intent.ACTION_PACKAGE_REPLACED)
+            addDataScheme("package")
+        }
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context, intent: Intent) {
+                scope.launch { refreshAppsInBackground() }
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            context.registerReceiver(receiver, filter)
+        }
+        onDispose {
+            try {
+                context.unregisterReceiver(receiver)
+            } catch (e: Exception) {
+            }
+        }
     }
 
     LaunchedEffect(apps) {
@@ -131,9 +188,9 @@ fun NetGuardApp() {
         if (protectionEnabled) sendServiceAction(LocalVpnService.ACTION_UPDATE)
     }
 
-    fun onNetworkScopeSelected(scope: String) {
-        networkScope = scope
-        AllowListStore.setNetworkScope(context, scope)
+    fun onNetworkScopeSelected(scope2: String) {
+        networkScope = scope2
+        AllowListStore.setNetworkScope(context, scope2)
         showNetworkDialog = false
         if (protectionEnabled) sendServiceAction(LocalVpnService.ACTION_UPDATE)
     }
@@ -204,6 +261,8 @@ fun NetGuardApp() {
                     allowedPackages = allowedPackages,
                     usageMap = usageMap,
                     protectionEnabled = protectionEnabled,
+                    searchQuery = searchQuery,
+                    onSearchQueryChange = { searchQuery = it },
                     onToggle = ::onAppToggle
                 )
                 1 -> LogTab(context = context)
@@ -226,28 +285,69 @@ fun AppsTab(
     allowedPackages: Map<String, Boolean>,
     usageMap: Map<Int, TrafficMonitor.UsageSnapshot>,
     protectionEnabled: Boolean,
+    searchQuery: String,
+    onSearchQueryChange: (String) -> Unit,
     onToggle: (String, Boolean) -> Unit
 ) {
-    if (apps.isEmpty()) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator()
+    Column(modifier = Modifier.fillMaxSize()) {
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = onSearchQueryChange,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            placeholder = { Text("ابحث عن تطبيق...") },
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+            trailingIcon = {
+                if (searchQuery.isNotEmpty()) {
+                    IconButton(onClick = { onSearchQueryChange("") }) {
+                        Icon(Icons.Filled.Close, contentDescription = "مسح البحث")
+                    }
+                }
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(12.dp)
+        )
+
+        if (apps.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+            return
         }
-        return
-    }
 
-    LazyColumn(modifier = Modifier.fillMaxSize()) {
-        items(apps, key = { it.packageName }) { app ->
-            val isActive = usageMap[app.uid]?.isActiveNow == true
-            val isAllowed = allowedPackages[app.packageName] ?: false
+        val filteredApps = remember(apps, searchQuery) {
+            if (searchQuery.isBlank()) {
+                apps
+            } else {
+                apps.filter {
+                    it.appName.contains(searchQuery, ignoreCase = true) ||
+                        it.packageName.contains(searchQuery, ignoreCase = true)
+                }
+            }
+        }
 
-            AppRow(
-                app = app,
-                isActiveNow = isActive,
-                isAllowed = isAllowed,
-                protectionEnabled = protectionEnabled,
-                onToggle = { checked -> onToggle(app.packageName, checked) }
-            )
-            HorizontalDivider()
+        if (filteredApps.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("ما فيه نتائج مطابقة", color = Color.Gray, fontSize = 13.sp)
+            }
+            return
+        }
+
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            items(filteredApps, key = { it.packageName }) { app ->
+                val isActive = usageMap[app.uid]?.isActiveNow == true
+                val isAllowed = allowedPackages[app.packageName] ?: false
+
+                AppRow(
+                    app = app,
+                    isActiveNow = isActive,
+                    isAllowed = isAllowed,
+                    protectionEnabled = protectionEnabled,
+                    onToggle = { checked -> onToggle(app.packageName, checked) }
+                )
+                HorizontalDivider()
+            }
         }
     }
 }
@@ -266,7 +366,7 @@ fun LogTab(context: android.content.Context) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                "محاولات الاتصال من التطبيقات المحجوبة",
+                "محاولات الاتصال من التطبيقات المحجوبة (آخر 50)",
                 fontSize = 12.sp,
                 color = Color.Gray
             )
@@ -400,14 +500,22 @@ fun AppRow(
     protectionEnabled: Boolean,
     onToggle: (Boolean) -> Unit
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // تحميل الأيقونة كسول - بس للتطبيقات الظاهرة فعلياً بالشاشة
         val bitmap = remember(app.packageName) {
-            app.icon?.toBitmap(width = 96, height = 96)?.asImageBitmap()
+            try {
+                context.packageManager.getApplicationIcon(app.packageName)
+                    .toBitmap(width = 96, height = 96).asImageBitmap()
+            } catch (e: Exception) {
+                null
+            }
         }
 
         Box(modifier = Modifier.size(40.dp).clip(CircleShape)) {
