@@ -35,6 +35,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.example.netguardlite.data.AppInfo
 import com.example.netguardlite.data.AppRepository
 import com.example.netguardlite.data.TrafficMonitor
@@ -147,11 +150,17 @@ fun NetGuardApp() {
         }
     }
 
-    LaunchedEffect(apps) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    // يشتغل بس لما التطبيق ظاهر فعلياً بالمقدمة، ويتوقف تلقائياً
+    // لما يصغّر أو الشاشة تطفي - توفيراً للبطارية
+    LaunchedEffect(apps, lifecycleOwner) {
         if (apps.isNotEmpty()) {
             val uids = apps.map { it.uid }.distinct()
-            TrafficMonitor.observe(uids).collect { snapshot ->
-                usageMap = snapshot
+            lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                TrafficMonitor.observe(uids).collect { snapshot ->
+                    usageMap = snapshot
+                }
             }
         }
     }
