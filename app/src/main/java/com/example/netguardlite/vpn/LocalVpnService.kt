@@ -36,7 +36,8 @@ class LocalVpnService : VpnService() {
 
         private const val CHANNEL_ID = "netguard_vpn_channel"
         private const val NOTIF_ID = 1001
-        private const val FLOW_CACHE_WINDOW_MS = 4000L
+        private const val FLOW_CACHE_WINDOW_MS = 15000L
+        private const val MIN_QUERY_GAP_MS = 200L // سقف أقصى ~5 استعلامات بالثانية
 
         @Volatile
         var isRunning: Boolean = false
@@ -53,6 +54,7 @@ class LocalVpnService : VpnService() {
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private val recentFlows = ConcurrentHashMap<String, Long>()
+    @Volatile private var lastQueryTimestamp: Long = 0L
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -159,7 +161,7 @@ class LocalVpnService : VpnService() {
             .addAddress("10.0.0.2", 32)
             .addRoute("0.0.0.0", 0)
             .addDnsServer("8.8.8.8")
-            .setBlocking(false)
+            .setBlocking(true)
 
         val allowedPackages = AllowListStore.getAllowedPackages(this)
         for (pkg in allowedPackages) {
