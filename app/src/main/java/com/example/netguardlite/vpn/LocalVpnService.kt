@@ -56,6 +56,9 @@ class LocalVpnService : VpnService() {
 
     @Volatile
     private var currentDefaultCapabilities: NetworkCapabilities? = null
+
+    @Volatile
+    private var lastAppliedDecision: Boolean? = null
     @Volatile private var lastQueryTimestamp: Long = 0L
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -66,14 +69,14 @@ class LocalVpnService : VpnService() {
                 return START_NOT_STICKY
             }
             ACTION_UPDATE -> {
-                if (isRunning) refreshVpnState()
+                if (isRunning) refreshVpnState(force = true)
                 return START_STICKY
             }
             else -> {
                 startForeground(NOTIF_ID, buildNotification())
                 isRunning = true
                 registerNetworkCallback()
-                refreshVpnState()
+                refreshVpnState(force = true)
                 return START_STICKY
             }
         }
@@ -135,11 +138,25 @@ class LocalVpnService : VpnService() {
         }
     }
 
-    /** يعيد تقييم هل النفق لازم يكون شغال أو متوقف حسب الشبكة الحالية */
-    private fun refreshVpnState() {
+    /**
+     * يعيد تقييم هل النفق لازم يكون شغال أو متوقف حسب الشبكة الحالية.
+     * force=true يجبر إعادة البناء دايماً (لازم عند START أو تعديل يدوي من المستخدم).
+     * force=false (افتراضي، من كولباك الشبكة) يتجاهل أي إشعار ما يغيّر
+     * "القرار الفعلي" (شغّل/وقف) عشان يمنع حلقة إعادة بناء لا نهائية.
+     */
+    @Synchronized
+    private fun refreshVpnState(force: Boolean = false) {
         if (!isRunning) return
         try {
-            if (currentTransportAllowsProtection()) {
+            val desired = currentTransportAllowsProtection()
+
+            if (!force && desired == lastAppliedDecision) {
+                return // ما تغير القرار الفعلي، تجاهل الإشعار
+            }
+
+            lastAppliedDecision = desired
+
+            if (desired) {
                 establishVpn()
             } else {
                 teardownTunnelOnly()
@@ -270,6 +287,7 @@ class LocalVpnService : VpnService() {
 
     private fun stopVpn() {
         isRunning = false
+        lastAppliedDecision = null
         unregisterNetworkCallback()
         teardownTunnelOnly()
         stopForeground(STOP_FOREGROUND_REMOVE)
