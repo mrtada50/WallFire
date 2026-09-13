@@ -9,7 +9,6 @@ import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -54,7 +53,9 @@ class LocalVpnService : VpnService() {
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private val recentFlows = ConcurrentHashMap<String, Long>()
-    private val availableNetworks = ConcurrentHashMap<Network, NetworkCapabilities>()
+
+    @Volatile
+    private var currentDefaultCapabilities: NetworkCapabilities? = null
     @Volatile private var lastQueryTimestamp: Long = 0L
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -82,10 +83,6 @@ class LocalVpnService : VpnService() {
         if (networkCallback != null) return
         connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
-        val request = NetworkRequest.Builder()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .build()
-
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 refreshVpnState()
@@ -95,19 +92,21 @@ class LocalVpnService : VpnService() {
                 network: Network,
                 networkCapabilities: NetworkCapabilities
             ) {
-                availableNetworks[network] = networkCapabilities
+                // هذا الكولباك يوصلنا بس عن "الشبكة الافتراضية النشطة حالياً"
+                // (بفضل registerDefaultNetworkCallback) - مو أي شبكة متصلة بالخلفية
+                currentDefaultCapabilities = networkCapabilities
                 refreshVpnState()
             }
 
             override fun onLost(network: Network) {
-                availableNetworks.remove(network)
+                currentDefaultCapabilities = null
                 refreshVpnState()
             }
         }
 
         networkCallback = callback
         try {
-            connectivityManager?.registerNetworkCallback(request, callback)
+            connectivityManager?.registerDefaultNetworkCallback(callback)
         } catch (e: Exception) {
         }
     }
@@ -120,18 +119,18 @@ class LocalVpnService : VpnService() {
             }
         }
         networkCallback = null
-        availableNetworks.clear()
+        currentDefaultCapabilities = null
     }
 
     private fun currentTransportAllowsProtection(): Boolean {
         val scope = AllowListStore.getNetworkScope(this)
         if (scope == AllowListStore.SCOPE_BOTH) return true
 
+        val caps = currentDefaultCapabilities ?: return false
+
         return when (scope) {
-            AllowListStore.SCOPE_WIFI_ONLY ->
-                availableNetworks.values.any { it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) }
-            AllowListStore.SCOPE_MOBILE_ONLY ->
-                availableNetworks.values.any { it.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) }
+            AllowListStore.SCOPE_WIFI_ONLY -> caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+            AllowListStore.SCOPE_MOBILE_ONLY -> caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
             else -> true
         }
     }
