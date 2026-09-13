@@ -54,6 +54,7 @@ class LocalVpnService : VpnService() {
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private val recentFlows = ConcurrentHashMap<String, Long>()
+    private val availableNetworks = ConcurrentHashMap<Network, NetworkCapabilities>()
     @Volatile private var lastQueryTimestamp: Long = 0L
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -94,10 +95,12 @@ class LocalVpnService : VpnService() {
                 network: Network,
                 networkCapabilities: NetworkCapabilities
             ) {
+                availableNetworks[network] = networkCapabilities
                 refreshVpnState()
             }
 
             override fun onLost(network: Network) {
+                availableNetworks.remove(network)
                 refreshVpnState()
             }
         }
@@ -117,23 +120,18 @@ class LocalVpnService : VpnService() {
             }
         }
         networkCallback = null
+        availableNetworks.clear()
     }
 
     private fun currentTransportAllowsProtection(): Boolean {
         val scope = AllowListStore.getNetworkScope(this)
         if (scope == AllowListStore.SCOPE_BOTH) return true
 
-        val cm = connectivityManager
-            ?: (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).also {
-                connectivityManager = it
-            }
-
-        val activeNetwork = cm.activeNetwork ?: return false
-        val caps = cm.getNetworkCapabilities(activeNetwork) ?: return false
-
         return when (scope) {
-            AllowListStore.SCOPE_WIFI_ONLY -> caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-            AllowListStore.SCOPE_MOBILE_ONLY -> caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+            AllowListStore.SCOPE_WIFI_ONLY ->
+                availableNetworks.values.any { it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) }
+            AllowListStore.SCOPE_MOBILE_ONLY ->
+                availableNetworks.values.any { it.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) }
             else -> true
         }
     }
